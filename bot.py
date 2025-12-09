@@ -46,8 +46,8 @@ def save_users(users: Dict[str, Any]) -> None:
 
 def fetch_raw_html() -> str:
     """
-    Тягне JSON з API та повертає поле rawhtml,
-    де лежить розмітка з графіком по групах.
+    Тягне JSON з API та повертає HTML-розмітку з графіком по групах.
+    Спробує спочатку rawhtml/rawHtml, потім rawMobileHtml.
     """
     resp = requests.get(API_URL, timeout=15)
     resp.raise_for_status()
@@ -59,30 +59,43 @@ def fetch_raw_html() -> str:
 
     raw_html = None
 
-    # шукаємо елемент типу photo-grafic і в ньому item з rawhtml
+    def pick_html(item: Dict[str, Any]):
+        # порядок пріоритету: rawhtml -> rawHtml -> rawMobileHtml
+        if item.get("rawhtml"):
+            return item["rawhtml"]
+        if item.get("rawHtml"):
+            return item["rawHtml"]
+        if item.get("rawMobileHtml"):
+            return item["rawMobileHtml"]
+        return None
+
+    # Спочатку шукаємо серед елементів type == 'photo-grafic'
     for m in members:
         if m.get("type") == "photo-grafic":
             for item in m.get("menuItems", []):
-                if "rawhtml" in item:
-                    raw_html = item["rawhtml"]
+                candidate = pick_html(item)
+                if candidate:
+                    raw_html = candidate
                     break
         if raw_html:
             break
 
-    # fallback: якщо з якоїсь причини не знайшли по type
+    # Fallback: просто перший item, де є rawhtml/rawHtml/rawMobileHtml
     if not raw_html:
         for m in members:
             for item in m.get("menuItems", []):
-                if "rawhtml" in item:
-                    raw_html = item["rawhtml"]
+                candidate = pick_html(item)
+                if candidate:
+                    raw_html = candidate
                     break
             if raw_html:
                 break
 
     if not raw_html:
-        raise ValueError("Не знайшов rawhtml у відповіді API")
+        raise ValueError("Не знайшов rawhtml/rawMobileHtml у відповіді API")
 
     return raw_html
+
 
 
 def html_to_text(raw_html: str) -> str:
