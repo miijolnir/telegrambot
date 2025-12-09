@@ -186,6 +186,40 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Перевірити поточний збережений стан: /status"
     )
 
+async def cmd_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Завжди тягне свіжий графік з API для поточної групи
+    і надсилає його користувачу, незалежно від last_message.
+    """
+    chat_id = str(update.effective_chat.id)
+    users = load_users()
+    user = users.get(chat_id)
+
+    if not user or not user.get("group"):
+        await update.message.reply_text(
+            "Група ще не налаштована. Використай /setup, наприклад:\n/setup 3.1"
+        )
+        return
+
+    group = user["group"]
+
+    try:
+        # блокуючий HTTP-виклик запускаємо в окремому потоці
+        message_text = await context.application.run_in_thread(
+            get_message_for_group, group
+        )
+    except Exception as e:
+        logging.exception("Помилка при отриманні графіка для /now: %s", e)
+        await update.message.reply_text(
+            "Не вдалося отримати поточний графік. Спробуй пізніше."
+        )
+        return
+
+    # оновлюємо last_message, щоб job_queue не дублював
+    user["last_message"] = message_text
+    save_users(users)
+
+    await update.message.reply_text(message_text)
 
 async def cmd_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
@@ -282,6 +316,7 @@ def main():
     application.add_handler(CommandHandler("start", cmd_start))
     application.add_handler(CommandHandler("setup", cmd_setup))
     application.add_handler(CommandHandler("status", cmd_status))
+    application.add_handler(CommandHandler("now", cmd_now))
 
     # JobQueue: періодична перевірка
     application.job_queue.run_repeating(
