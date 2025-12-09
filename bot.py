@@ -46,8 +46,8 @@ def save_users(users: Dict[str, Any]) -> None:
 
 def fetch_raw_html() -> str:
     """
-    Тягне JSON з API та повертає HTML-розмітку з графіком по групах.
-    Спробує спочатку rawhtml/rawHtml, потім rawMobileHtml.
+    Тягне JSON з API та повертає поле rawhtml,
+    де лежить розмітка з графіком по групах.
     """
     resp = requests.get(API_URL, timeout=15)
     resp.raise_for_status()
@@ -59,43 +59,30 @@ def fetch_raw_html() -> str:
 
     raw_html = None
 
-    def pick_html(item: Dict[str, Any]) -> str | None:
-        # порядок пріоритету: rawhtml -> rawHtml -> rawMobileHtml
-        if "rawhtml" in item and item["rawhtml"]:
-            return item["rawhtml"]
-        if "rawHtml" in item and item["rawHtml"]:
-            return item["rawHtml"]
-        if "rawMobileHtml" in item and item["rawMobileHtml"]:
-            return item["rawMobileHtml"]
-        return None
-
-    # Спочатку шукаємо серед елементів type == 'photo-grafic'
+    # шукаємо елемент типу photo-grafic і в ньому item з rawhtml
     for m in members:
         if m.get("type") == "photo-grafic":
             for item in m.get("menuItems", []):
-                candidate = pick_html(item)
-                if candidate:
-                    raw_html = candidate
+                if "rawhtml" in item:
+                    raw_html = item["rawhtml"]
                     break
         if raw_html:
             break
 
-    # Fallback: просто перший item, де є rawhtml/rawHtml/rawMobileHtml
+    # fallback: якщо з якоїсь причини не знайшли по type
     if not raw_html:
         for m in members:
             for item in m.get("menuItems", []):
-                candidate = pick_html(item)
-                if candidate:
-                    raw_html = candidate
+                if "rawhtml" in item:
+                    raw_html = item["rawhtml"]
                     break
             if raw_html:
                 break
 
     if not raw_html:
-        raise ValueError("Не знайшов rawhtml/rawMobileHtml у відповіді API")
+        raise ValueError("Не знайшов rawhtml у відповіді API")
 
     return raw_html
-
 
 
 def html_to_text(raw_html: str) -> str:
@@ -141,6 +128,7 @@ def parse_schedule_text(full_text: str, group: str) -> Tuple[str, str, str]:
             else:
                 date_str = line.strip()
         elif "Інформація станом на" in line:
+            # "Інформація станом на 07:36 09.12.2025"
             info_str = line.replace("Інформація станом на", "").strip()
         elif f"Група {group}" in line:
             group_line = line.strip()
@@ -188,8 +176,44 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Налаштуй свою групу командою, наприклад:\n"
         "/setup 3.1\n\n"
         "Перевірити поточний збережений стан: /status\n"
-        "Отримати поточний графік зараз: /now"
+        "Подивитися актуальний графік прямо зараз: /now"
     )
+
+
+async def cmd_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Завжди тягне свіжий графік з API для поточної групи
+    і надсилає його користувачу, незалежно від last_message.
+    """
+    chat_id = str(update.effective_chat.id)
+    users = load_users()
+    user = users.get(chat_id)
+
+    if not user or not user.get("group"):
+        await update.message.reply_text(
+            "Група ще не налаштована. Використай /setup, наприклад:\n/setup 3.1"
+        )
+        return
+
+    group = user["group"]
+
+    try:
+        # блокуючий HTTP-виклик запускаємо в окремому потоці
+        message_text = await context.application.run_in_thread(
+            get_message_for_group, group
+        )
+    except Exception as e:
+        logger.exception("Помилка при отриманні графіка для /now: %s", e)
+        await update.message.reply_text(
+            "Не вдалося отримати поточний графік. Спробуй пізніше."
+        )
+        return
+
+    # оновлюємо last_message, щоб job_queue не дублював
+    user["last_message"] = message_text
+    save_users(users)
+
+    await update.message.reply_text(message_text)
 
 
 async def cmd_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -206,7 +230,7 @@ async def cmd_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     group = context.args[0].strip()
     users[chat_id]["group"] = group
-    users[chat_id]["last_message"] = None  # щоб наступне оновлення точно прийшло
+    users[chat_id]["last_message"] = None  # скинемо, щоб наступне отримання точно надіслалось
     save_users(users)
 
     await update.message.reply_text(
@@ -233,53 +257,17 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if last_message:
         msg += "\nОстаннє збережене повідомлення:\n\n" + last_message
     else:
-        msg += "\nПовідомлень ще немає — можеш натиснути /now, щоб отримати поточний графік."
+        msg += "\nПовідомлень ще немає — чекатиму оновлення графіка."
 
     await update.message.reply_text(msg)
-
-
-async def cmd_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Завжди тягне свіжий графік з API для поточної групи
-    і надсилає його користувачу, незалежно від last_message.
-    """
-    chat_id = str(update.effective_chat.id)
-    users = load_users()
-    user = users.get(chat_id)
-
-    if not user or not user.get("group"):
-        await update.message.reply_text(
-            "Група ще не налаштована. Використай /setup, наприклад:\n/setup 3.1"
-        )
-        return
-
-    group = user["group"]
-
-    try:
-        # блокуючий HTTP-виклик запускаємо в окремому потоці
-        message_text = await context.application.run_in_thread(
-            get_message_for_group, group
-        )
-    except Exception as e:
-        logging.exception("Помилка при отриманні графіка для /now: %s", e)
-        await update.message.reply_text(
-            "Не вдалося отримати поточний графік. Спробуй пізніше."
-        )
-        return
-
-    # оновлюємо last_message, щоб фоновий job не дублював
-    user["last_message"] = message_text
-    save_users(users)
-
-    await update.message.reply_text(message_text)
 
 
 # ---------------- JOBQUEUE: ПЕРІОДИЧНА ПЕРЕВІРКА ----------------
 
 async def job_check_all(context: ContextTypes.DEFAULT_TYPE):
     """
-    Перевіряє всі налаштовані групи для всіх користувачів
-    і, якщо текст для групи змінився, шле оновлення.
+    JobQueue callback: перевіряє всі налаштовані групи для всіх користувачів,
+    і якщо текст для групи змінився — шле оновлення.
     """
     users = load_users()
     if not users:
@@ -291,6 +279,7 @@ async def job_check_all(context: ContextTypes.DEFAULT_TYPE):
             continue
 
         try:
+            # блокуючий HTTP-виклик запускаємо в окремому потоці
             message_text = await context.application.run_in_thread(
                 get_message_for_group, group
             )
@@ -325,11 +314,11 @@ def main() -> None:
     application.add_handler(CommandHandler("status", cmd_status))
     application.add_handler(CommandHandler("now", cmd_now))
 
-    # періодична перевірка кожні CHECK_INTERVAL_SECONDS
+    # JobQueue: запуск job_check_all кожні CHECK_INTERVAL_SECONDS секунд
     application.job_queue.run_repeating(
         job_check_all,
         interval=CHECK_INTERVAL_SECONDS,
-        first=5,
+        first=5,  # перша перевірка через 5 секунд після старту
     )
 
     logger.info("Бот стартує...")
