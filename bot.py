@@ -103,7 +103,7 @@ def fetch_raw_html() -> str:
         if raw_html:
             break
 
-    # Fallback: просто перший item, де є rawhtml/rawHtml/rawMobileHtml
+    # Fallback: перший item, де є rawhtml/rawHtml/rawMobileHtml
     if not raw_html:
         for m in members:
             for item in m.get("menuItems", []):
@@ -207,10 +207,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         "Привіт! Я бот, який стежить за оновленнями графіків відключень ⚡\n\n"
-        "Налаштуй свою групу командою, наприклад:\n"
-        "/setup 3.1\n\n"
-        "Перевірити поточний збережений стан: /status\n"
-        "Подивитися актуальний графік прямо зараз: /now",
+        "✅ Щоб задати або змінити групу — просто надішли її номер, наприклад: 3.1\n\n"
+        "Також доступні команди:\n"
+        "/status — показати останній відомий графік\n"
+        "/now — отримати актуальний графік прямо зараз",
         reply_markup=MAIN_KEYBOARD,
     )
 
@@ -226,7 +226,7 @@ async def cmd_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not user or not user.get("group"):
         await update.message.reply_text(
-            "Група ще не налаштована. Використай /setup, наприклад:\n/setup 3.1",
+            "Група ще не налаштована. Надішли номер групи, наприклад: 3.1",
             reply_markup=MAIN_KEYBOARD,
         )
         return
@@ -234,7 +234,6 @@ async def cmd_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     group = user["group"]
 
     try:
-        # блокуючий HTTP-виклик запускаємо в окремому потоці
         message_text = await asyncio.to_thread(get_message_for_group, group)
     except Exception as e:
         logger.exception("Помилка при отриманні графіка для /now: %s", e)
@@ -244,7 +243,6 @@ async def cmd_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # оновлюємо last_message, щоб job_queue не дублював
     user["last_message"] = message_text
     save_users(users)
 
@@ -252,6 +250,10 @@ async def cmd_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Залишаємо /setup як запасний варіант.
+    Але основний спосіб — просто написати 3.1.
+    """
     chat_id = str(update.effective_chat.id)
     users = load_users()
     if chat_id not in users:
@@ -259,7 +261,8 @@ async def cmd_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not context.args:
         await update.message.reply_text(
-            "Вкажи номер групи.\nПриклад:\n/setup 3.1",
+            "Вкажи номер групи.\nПриклад:\n/setup 3.1\n"
+            "Або просто надішли повідомлення: 3.1",
             reply_markup=MAIN_KEYBOARD,
         )
         return
@@ -283,7 +286,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not user or not user.get("group"):
         await update.message.reply_text(
-            "Група ще не налаштована. Використай /setup, наприклад:\n/setup 3.1",
+            "Група ще не налаштована. Надішли номер групи, наприклад: 3.1",
             reply_markup=MAIN_KEYBOARD,
         )
         return
@@ -291,7 +294,6 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     group = user["group"]
     last_message = user.get("last_message")
 
-    # Якщо last_message ще нема – спробуємо підтягнути поточний графік
     if not last_message:
         try:
             last_message = await asyncio.to_thread(get_message_for_group, group)
@@ -310,31 +312,63 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, reply_markup=MAIN_KEYBOARD)
 
 
-# ---------------- ОБРОБКА КНОПОК ----------------
+# ---------------- ДОПОМІЖНЕ: ЗАСТОСУВАТИ ГРУПУ ----------------
+
+async def apply_group(update: Update, context: ContextTypes.DEFAULT_TYPE, group: str):
+    """
+    Записує нову групу так само, як /setup, але для випадку,
+    коли користувач просто надіслав '3.1'.
+    """
+    chat_id = str(update.effective_chat.id)
+    users = load_users()
+
+    if chat_id not in users:
+        users[chat_id] = {"group": None, "last_message": None}
+
+    users[chat_id]["group"] = group
+    users[chat_id]["last_message"] = None
+    save_users(users)
+
+    await update.message.reply_text(
+        f"Групу змінено на {group}.\n"
+        "Я повідомлю, коли для цієї групи оновиться графік.",
+        reply_markup=MAIN_KEYBOARD,
+    )
+
+
+# ---------------- ОБРОБКА КНОПОК ТА ТЕКСТУ ----------------
 
 async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
 
+    # 1) Якщо текст виглядає як номер групи (1.1–6.2) → зберігаємо як групу
+    if re.fullmatch(r"[1-6]\.[1-2]", text):
+        await apply_group(update, context, text)
+        return
+
+    # 2) Обробка кнопок
     if text.startswith("🔄"):
-        # Оновити зараз
         await cmd_now(update, context)
-    elif text.startswith("ℹ️"):
-        # Статус
+        return
+
+    if text.startswith("ℹ️"):
         await cmd_status(update, context)
-    elif text.startswith("⚙️"):
-        # Підказка, як змінити групу
+        return
+
+    if text.startswith("⚙️"):
         await update.message.reply_text(
-            "Щоб змінити групу, відправ команду у форматі:\n"
-            "/setup 3.1\n\n"
-            "Просто зміни цифри під свою групу.",
+            "Введи номер групи у форматі, наприклад:\n"
+            "3.1\n\n"
+            "Я автоматично збережу її 😉",
             reply_markup=MAIN_KEYBOARD,
         )
-    else:
-        # Все інше – ввічливе повідомлення
-        await update.message.reply_text(
-            "Я розумію натискання кнопок або команди /start /setup /status /now 😊",
-            reply_markup=MAIN_KEYBOARD,
-        )
+        return
+
+    # 3) Все інше
+    await update.message.reply_text(
+        "Я розумію кнопки, номер групи (наприклад 3.1) або команди /start /status /now.",
+        reply_markup=MAIN_KEYBOARD,
+    )
 
 
 # ---------------- JOBQUEUE: ПЕРІОДИЧНА ПЕРЕВІРКА ----------------
@@ -342,7 +376,7 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def job_check_all(context: ContextTypes.DEFAULT_TYPE):
     """
     JobQueue callback: перевіряє всі налаштовані групи для всіх користувачів,
-    і якщо текст для групи змінився — шле оновлення.
+    і якщо текст для групи змінюється — шле оновлення.
     """
     users = load_users()
     if not users:
@@ -388,8 +422,10 @@ def main() -> None:
     application.add_handler(CommandHandler("status", cmd_status))
     application.add_handler(CommandHandler("now", cmd_now))
 
-    # Обробка натискань на кнопки (текстові повідомлення без /команд)
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_buttons))
+    # Обробка тексту/кнопок (усі текстові повідомлення без /команд)
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_buttons)
+    )
 
     # JobQueue: запуск job_check_all кожні CHECK_INTERVAL_SECONDS секунд
     application.job_queue.run_repeating(
