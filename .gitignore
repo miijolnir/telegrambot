@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pdb
+*.egg-info/
+dist/
+build/
+
+# Віртуальне середовище
+venv/
+.env/
+.venv/
+
+# Файл з користувачами
+users.json
+
+# IDE
+.idea/
+.vscode/
+*.iml
