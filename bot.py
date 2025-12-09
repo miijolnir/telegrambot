@@ -306,28 +306,26 @@ async def periodic_job(context: ContextTypes.DEFAULT_TYPE):
 
 # ---------------- ЗАПУСК БОТА (БЕЗ asyncio.run) ----------------
 
-def main():
+def main() -> None:
     if not BOT_TOKEN:
         raise RuntimeError("Не задано TELEGRAM_BOT_TOKEN у змінних середовища.")
 
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Команди
     application.add_handler(CommandHandler("start", cmd_start))
     application.add_handler(CommandHandler("setup", cmd_setup))
     application.add_handler(CommandHandler("status", cmd_status))
-    application.add_handler(CommandHandler("now", cmd_now))
+    application.add_handler(CommandHandler("now", cmd_now))  # ← ось цей рядок
 
-    # JobQueue: періодична перевірка
     application.job_queue.run_repeating(
-        periodic_job,
+        job_check_all,
         interval=CHECK_INTERVAL_SECONDS,
-        first=5,  # перший запуск через 5 секунд після старту
+        first=5,
     )
 
     logger.info("Бот стартує...")
-    # run_polling САМ створює і керує event loop – тут не треба asyncio.run
     application.run_polling()
+
 
 
 if __name__ == "__main__":
