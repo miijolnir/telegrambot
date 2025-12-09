@@ -25,5 +25,5 @@ python -m venv venv
 source venv/bin/activate   # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 
-export TELEGRAM_BOT_TOKEN="ТВОЙ_ТОКЕН_З_BOTFATHER"
+export TELEGRAM_BOT_TOKEN="ТВІЙ_ТОКЕН_З_BOTFATHER"
 python bot.py
