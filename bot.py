@@ -5,6 +5,7 @@ import logging
 import re
 from typing import Dict, Any, Tuple, List
 
+import asyncio
 import requests
 from telegram import Update
 from telegram.ext import (
@@ -48,8 +49,20 @@ def fetch_raw_html() -> str:
     """
     Тягне JSON з API та повертає HTML-розмітку з графіком по групах.
     Спробує спочатку rawhtml/rawHtml, потім rawMobileHtml.
+    Додаємо заголовки, щоб виглядати як нормальний браузер.
     """
-    resp = requests.get(API_URL, timeout=15)
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0 Safari/537.36"
+        ),
+        "Accept": "application/json, text/plain, */*",
+        "Referer": "https://poweron.loe.lviv.ua/",
+        "Connection": "close",
+    }
+
+    resp = requests.get(API_URL, headers=headers, timeout=15)
     resp.raise_for_status()
     data = resp.json()
 
@@ -97,10 +110,9 @@ def fetch_raw_html() -> str:
     return raw_html
 
 
-
 def html_to_text(raw_html: str) -> str:
     """
-    Перетворює HTML з rawhtml на нормальний текст з переносами рядків.
+    Перетворює HTML з rawhtml/rawMobileHtml на нормальний текст з переносами рядків.
     """
     from html import unescape
 
@@ -141,7 +153,6 @@ def parse_schedule_text(full_text: str, group: str) -> Tuple[str, str, str]:
             else:
                 date_str = line.strip()
         elif "Інформація станом на" in line:
-            # "Інформація станом на 07:36 09.12.2025"
             info_str = line.replace("Інформація станом на", "").strip()
         elif f"Група {group}" in line:
             group_line = line.strip()
@@ -212,13 +223,12 @@ async def cmd_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         # блокуючий HTTP-виклик запускаємо в окремому потоці
-        message_text = await context.application.run_in_thread(
-            get_message_for_group, group
-        )
+        message_text = await asyncio.to_thread(get_message_for_group, group)
     except Exception as e:
         logger.exception("Помилка при отриманні графіка для /now: %s", e)
         await update.message.reply_text(
-            "Не вдалося отримати поточний графік. Спробуй пізніше."
+            f"Не вдалося отримати поточний графік. "
+            f"Технічна деталь: {type(e).__name__}: {e}"
         )
         return
 
@@ -243,7 +253,7 @@ async def cmd_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     group = context.args[0].strip()
     users[chat_id]["group"] = group
-    users[chat_id]["last_message"] = None  # скинемо, щоб наступне отримання точно надіслалось
+    users[chat_id]["last_message"] = None
     save_users(users)
 
     await update.message.reply_text(
@@ -266,12 +276,22 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     group = user["group"]
     last_message = user.get("last_message")
 
-    msg = f"Твоя група: {group}\n"
-    if last_message:
-        msg += "\nОстаннє збережене повідомлення:\n\n" + last_message
-    else:
-        msg += "\nПовідомлень ще немає — чекатиму оновлення графіка."
+    # Якщо last_message ще нема – спробуємо підтягнути поточний графік
+    if not last_message:
+        try:
+            last_message = await asyncio.to_thread(get_message_for_group, group)
+            user["last_message"] = last_message
+            save_users(users)
+        except Exception as e:
+            logger.exception("Помилка при отриманні графіка для /status: %s", e)
+            await update.message.reply_text(
+                f"Твоя група: {group}\n\n"
+                "Повідомлень ще немає, і не вдалося отримати поточний графік.\n"
+                f"Технічна деталь: {type(e).__name__}: {e}"
+            )
+            return
 
+    msg = f"Твоя група: {group}\n\nОстаннє відоме повідомлення:\n\n{last_message}"
     await update.message.reply_text(msg)
 
 
@@ -292,10 +312,7 @@ async def job_check_all(context: ContextTypes.DEFAULT_TYPE):
             continue
 
         try:
-            # блокуючий HTTP-виклик запускаємо в окремому потоці
-            message_text = await context.application.run_in_thread(
-                get_message_for_group, group
-            )
+            message_text = await asyncio.to_thread(get_message_for_group, group)
         except Exception as e:
             logger.exception("Помилка при отриманні графіка для групи %s: %s", group, e)
             continue
@@ -327,11 +344,10 @@ def main() -> None:
     application.add_handler(CommandHandler("status", cmd_status))
     application.add_handler(CommandHandler("now", cmd_now))
 
-    # JobQueue: запуск job_check_all кожні CHECK_INTERVAL_SECONDS секунд
     application.job_queue.run_repeating(
         job_check_all,
         interval=CHECK_INTERVAL_SECONDS,
-        first=5,  # перша перевірка через 5 секунд після старту
+        first=5,
     )
 
     logger.info("Бот стартує...")
