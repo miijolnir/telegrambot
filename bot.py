@@ -1,11 +1,11 @@
 # bot.py
 import os
 import json
-import asyncio
 import logging
 import re
 from typing import Dict, Any, Tuple, List
 
+import asyncio
 import requests
 from telegram import Update
 from telegram.ext import (
@@ -53,28 +53,6 @@ def fetch_raw_html() -> str:
     resp = requests.get(API_URL, timeout=15)
     resp.raise_for_status()
     data = resp.json()
-
-    # Очікувана структура:
-    # {
-    #   "@context": "...",
-    #   "@type": "hydra:Collection",
-    #   "hydra:member": [
-    #       {
-    #           "id": 9,
-    #           "name": "Чому немає світла (Зображення-графік)",
-    #           "type": "photo-grafic",
-    #           "menuItems": [
-    #               {
-    #                   "name": "Today",
-    #                   "rawhtml": "<div>...</div>",
-    #                   "rawMobileHtml": "<div>...</div>",
-    #                   ...
-    #               },
-    #               ...
-    #           ]
-    #       }
-    #   ]
-    # }
 
     members: List[Dict[str, Any]] = data.get("hydra:member")
     if not members:
@@ -255,74 +233,67 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg)
 
 
-# ---------------- ПЕРІОДИЧНА ПЕРЕВІРКА ----------------
+# ---------------- ПЕРІОДИЧНА ПЕРЕВІРКА ЧЕРЕЗ JobQueue ----------------
 
-async def periodic_checker(app):
+async def periodic_job(context: ContextTypes.DEFAULT_TYPE):
     """
-    Раз на CHECK_INTERVAL_SECONDS:
-      - для всіх користувачів з налаштованою групою
-      - отримує поточний текст графіка для їх групи
-      - якщо він змінився відносно last_message -> шле повідомлення
+    Викликається JobQueue-ю кожні CHECK_INTERVAL_SECONDS.
     """
-    while True:
+    users = load_users()
+    if not users:
+        return
+
+    app = context.application
+
+    for chat_id, info in users.items():
+        group = info.get("group")
+        if not group:
+            continue
+
         try:
-            users = load_users()
-            if not users:
-                await asyncio.sleep(CHECK_INTERVAL_SECONDS)
-                continue
-
-            for chat_id, info in users.items():
-                group = info.get("group")
-                if not group:
-                    continue
-
-                try:
-                    message_text = await async_get_message_for_group(group)
-                except Exception as e:
-                    logger.exception("Помилка при отриманні графіка для групи %s: %s", group, e)
-                    continue
-
-                if message_text != info.get("last_message"):
-                    info["last_message"] = message_text
-                    save_users(users)
-
-                    try:
-                        await app.bot.send_message(
-                            chat_id=int(chat_id),
-                            text=message_text,
-                        )
-                        logger.info("Надіслано оновлення для chat_id=%s, group=%s", chat_id, group)
-                    except Exception as e:
-                        logger.exception("Не вдалося надіслати повідомлення chat_id=%s: %s", chat_id, e)
-
-            await asyncio.sleep(CHECK_INTERVAL_SECONDS)
-
+            message_text = await async_get_message_for_group(group)
         except Exception as e:
-            logger.exception("Помилка у periodic_checker: %s", e)
-            # щоб цикл не впав – трохи почекати і продовжити
-            await asyncio.sleep(CHECK_INTERVAL_SECONDS)
+            logger.exception("Помилка при отриманні графіка для групи %s: %s", group, e)
+            continue
+
+        if message_text != info.get("last_message"):
+            info["last_message"] = message_text
+            save_users(users)
+
+            try:
+                await app.bot.send_message(
+                    chat_id=int(chat_id),
+                    text=message_text,
+                )
+                logger.info("Надіслано оновлення для chat_id=%s, group=%s", chat_id, group)
+            except Exception as e:
+                logger.exception("Не вдалося надіслати повідомлення chat_id=%s: %s", chat_id, e)
 
 
-# ---------------- ЗАПУСК БОТА ----------------
+# ---------------- ЗАПУСК БОТА (БЕЗ asyncio.run) ----------------
 
-async def main():
+def main():
     if not BOT_TOKEN:
         raise RuntimeError("Не задано TELEGRAM_BOT_TOKEN у змінних середовища.")
 
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
+    # Команди
     application.add_handler(CommandHandler("start", cmd_start))
     application.add_handler(CommandHandler("setup", cmd_setup))
     application.add_handler(CommandHandler("status", cmd_status))
 
-    async def on_startup(app):
-        app.create_task(periodic_checker(app))
-
-    application.post_init = on_startup
+    # JobQueue: періодична перевірка
+    application.job_queue.run_repeating(
+        periodic_job,
+        interval=CHECK_INTERVAL_SECONDS,
+        first=5,  # перший запуск через 5 секунд після старту
+    )
 
     logger.info("Бот стартує...")
-    await application.run_polling()
+    # run_polling САМ створює і керує event loop – тут не треба asyncio.run
+    application.run_polling()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
