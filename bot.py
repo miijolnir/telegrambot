@@ -7,11 +7,13 @@ from typing import Dict, Any, Tuple, List
 
 import asyncio
 import requests
-from telegram import Update
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     ContextTypes,
+    MessageHandler,
+    filters,
 )
 
 # ---------------- НАЛАШТУВАННЯ ----------------
@@ -27,6 +29,15 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# Клавіатура з основними кнопками
+MAIN_KEYBOARD = ReplyKeyboardMarkup(
+    [
+        [KeyboardButton("🔄 Оновити зараз"), KeyboardButton("ℹ️ Статус")],
+        [KeyboardButton("⚙️ Змінити групу")],
+    ],
+    resize_keyboard=True
+)
 
 
 # ---------------- ЗБЕРЕЖЕННЯ КОРИСТУВАЧІВ ----------------
@@ -49,7 +60,6 @@ def fetch_raw_html() -> str:
     """
     Тягне JSON з API та повертає HTML-розмітку з графіком по групах.
     Спробує спочатку rawhtml/rawHtml, потім rawMobileHtml.
-    Додаємо заголовки, щоб виглядати як нормальний браузер.
     """
     headers = {
         "User-Agent": (
@@ -200,7 +210,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Налаштуй свою групу командою, наприклад:\n"
         "/setup 3.1\n\n"
         "Перевірити поточний збережений стан: /status\n"
-        "Подивитися актуальний графік прямо зараз: /now"
+        "Подивитися актуальний графік прямо зараз: /now",
+        reply_markup=MAIN_KEYBOARD,
     )
 
 
@@ -215,7 +226,8 @@ async def cmd_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not user or not user.get("group"):
         await update.message.reply_text(
-            "Група ще не налаштована. Використай /setup, наприклад:\n/setup 3.1"
+            "Група ще не налаштована. Використай /setup, наприклад:\n/setup 3.1",
+            reply_markup=MAIN_KEYBOARD,
         )
         return
 
@@ -227,8 +239,8 @@ async def cmd_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.exception("Помилка при отриманні графіка для /now: %s", e)
         await update.message.reply_text(
-            f"Не вдалося отримати поточний графік. "
-            f"Технічна деталь: {type(e).__name__}: {e}"
+            "Не вдалося отримати поточний графік. Спробуй пізніше.",
+            reply_markup=MAIN_KEYBOARD,
         )
         return
 
@@ -236,7 +248,7 @@ async def cmd_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user["last_message"] = message_text
     save_users(users)
 
-    await update.message.reply_text(message_text)
+    await update.message.reply_text(message_text, reply_markup=MAIN_KEYBOARD)
 
 
 async def cmd_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -247,7 +259,8 @@ async def cmd_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not context.args:
         await update.message.reply_text(
-            "Вкажи номер групи.\nПриклад:\n/setup 3.1"
+            "Вкажи номер групи.\nПриклад:\n/setup 3.1",
+            reply_markup=MAIN_KEYBOARD,
         )
         return
 
@@ -258,7 +271,8 @@ async def cmd_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         f"Групу збережено: {group}\n"
-        "Я повідомлю, коли з'явиться або зміниться графік для цієї групи."
+        "Я повідомлю, коли з'явиться або зміниться графік для цієї групи.",
+        reply_markup=MAIN_KEYBOARD,
     )
 
 
@@ -269,7 +283,8 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not user or not user.get("group"):
         await update.message.reply_text(
-            "Група ще не налаштована. Використай /setup, наприклад:\n/setup 3.1"
+            "Група ще не налаштована. Використай /setup, наприклад:\n/setup 3.1",
+            reply_markup=MAIN_KEYBOARD,
         )
         return
 
@@ -286,13 +301,40 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.exception("Помилка при отриманні графіка для /status: %s", e)
             await update.message.reply_text(
                 f"Твоя група: {group}\n\n"
-                "Повідомлень ще немає, і не вдалося отримати поточний графік.\n"
-                f"Технічна деталь: {type(e).__name__}: {e}"
+                "Повідомлень ще немає, і не вдалося отримати поточний графік.",
+                reply_markup=MAIN_KEYBOARD,
             )
             return
 
     msg = f"Твоя група: {group}\n\nОстаннє відоме повідомлення:\n\n{last_message}"
-    await update.message.reply_text(msg)
+    await update.message.reply_text(msg, reply_markup=MAIN_KEYBOARD)
+
+
+# ---------------- ОБРОБКА КНОПОК ----------------
+
+async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (update.message.text or "").strip()
+
+    if text.startswith("🔄"):
+        # Оновити зараз
+        await cmd_now(update, context)
+    elif text.startswith("ℹ️"):
+        # Статус
+        await cmd_status(update, context)
+    elif text.startswith("⚙️"):
+        # Підказка, як змінити групу
+        await update.message.reply_text(
+            "Щоб змінити групу, відправ команду у форматі:\n"
+            "/setup 3.1\n\n"
+            "Просто зміни цифри під свою групу.",
+            reply_markup=MAIN_KEYBOARD,
+        )
+    else:
+        # Все інше – ввічливе повідомлення
+        await update.message.reply_text(
+            "Я розумію натискання кнопок або команди /start /setup /status /now 😊",
+            reply_markup=MAIN_KEYBOARD,
+        )
 
 
 # ---------------- JOBQUEUE: ПЕРІОДИЧНА ПЕРЕВІРКА ----------------
@@ -325,6 +367,7 @@ async def job_check_all(context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_message(
                     chat_id=int(chat_id),
                     text=message_text,
+                    reply_markup=MAIN_KEYBOARD,
                 )
                 logger.info("Надіслано оновлення для chat_id=%s, group=%s", chat_id, group)
             except Exception as e:
@@ -339,11 +382,16 @@ def main() -> None:
 
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
+    # Команди
     application.add_handler(CommandHandler("start", cmd_start))
     application.add_handler(CommandHandler("setup", cmd_setup))
     application.add_handler(CommandHandler("status", cmd_status))
     application.add_handler(CommandHandler("now", cmd_now))
 
+    # Обробка натискань на кнопки (текстові повідомлення без /команд)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_buttons))
+
+    # JobQueue: запуск job_check_all кожні CHECK_INTERVAL_SECONDS секунд
     application.job_queue.run_repeating(
         job_check_all,
         interval=CHECK_INTERVAL_SECONDS,
