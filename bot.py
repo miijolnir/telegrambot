@@ -33,8 +33,8 @@ logger = logging.getLogger(__name__)
 # Клавіатура з основними кнопками
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
-        [KeyboardButton("🔄 Оновити зараз"), KeyboardButton("ℹ️ Статус")],
-        [KeyboardButton("⚙️ Змінити групу")],
+        [KeyboardButton("▶️ Start"), KeyboardButton("🔄 Оновити зараз")],
+        [KeyboardButton("ℹ️ Статус"), KeyboardButton("⚙️ Змінити групу")],
     ],
     resize_keyboard=True
 )
@@ -341,7 +341,12 @@ async def apply_group(update: Update, context: ContextTypes.DEFAULT_TYPE, group:
 async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
 
-    # 1) Якщо текст виглядає як номер групи (1.1–6.2) → зберігаємо як групу
+    # 0) Кнопка Start
+    if text.startswith("▶️"):
+        await cmd_start(update, context)
+        return
+
+    # 1) Якщо текст виглядає як номер групи (1.1–6.2)
     if re.fullmatch(r"[1-6]\.[1-2]", text):
         await apply_group(update, context, text)
         return
