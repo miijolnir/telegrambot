@@ -85,6 +85,7 @@ def fetch_raw_html() -> str:
     return raw_html
 
 
+
 def html_to_text(raw_html: str) -> str:
     """
     Перетворює HTML з rawhtml на нормальний текст з переносами рядків.
